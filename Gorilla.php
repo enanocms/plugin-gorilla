@@ -766,6 +766,26 @@ function gorilla_prune_expired()
 
 register_cron_task('gorilla_prune_expired', 1);
 
+// Search handler
+$plugins->attachHook('session_started', 'gorilla_attach_search();');
+function gorilla_attach_search()
+{
+  global $lang;
+  register_search_handler(array(
+    'table' => 'pastes',
+    'titlecolumn' => 'paste_title',
+    'datacolumn' => 'paste_text',
+    'uniqueid' => 'ns=Paste;cid={paste_id}',
+    'additionalcolumns' => array('paste_id', 'paste_language'),
+    'resultnote' => $lang->get('gorilla_lbl_search_tag'),
+    'linkformat' => array(
+        'page_id' => '{paste_id}',
+        'namespace' => 'Paste'
+      ),
+    'additionalwhere' => 'AND (paste_flags & ' . PASTE_PRIVATE . ') = 0',
+  ));
+}
+
 /**!install dbms="mysql"; **
 CREATE TABLE {{TABLE_PREFIX}}pastes(
   paste_id int(18) NOT NULL auto_increment,
@@ -850,6 +870,8 @@ DROP TABLE {{TABLE_PREFIX}}pastes;
         msg_paste_deleted: 'Paste deleted.',
         msg_delete_confirm: 'Really delete this paste?',
         btn_delete_confirm: 'Delete',
+        
+        lbl_search_tag: '[Paste]',
       }
     }
   }
