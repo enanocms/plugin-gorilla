@@ -551,14 +551,15 @@ function gorilla_display_paste($data)
   $perms = $session->fetch_page_acl($paste_id, 'Paste');
   
   $localhash = false;
+  $hash = gorilla_sign($paste_id, $paste_text);
   if ( $paste_flags & PASTE_PRIVATE )
   {
-    $localhash = gorilla_sign($paste_id, $paste_text);
+    $localhash = $hash;
   }
   
   if ( $paste_flags & PASTE_PRIVATE || isset($_GET['delete']) )
   {
-    if ( @$_GET['hash'] !== $localhash )
+    if ( @$_GET['hash'] !== $hash )
     {
       // allow viewing regardless if mod or admin
       if ( !($session->user_level >= USER_LEVEL_MOD && !isset($_GET['delete'])) )
