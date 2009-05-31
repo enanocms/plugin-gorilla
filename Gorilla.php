@@ -5,8 +5,9 @@
   "Plugin URI"   : "http://enanocms.org/plugin/gorilla",
   "Description"  : "For The Toughest Pasting Jobs On Earth.&trade; The pastebin, Enano style. <a href=\"http://enanocms.org/plugin/geshi\" onclick=\"window.open(this.href); return false;\">GeSHi plugin</a> highly recommended.",
   "Author"       : "Dan Fuhry",
-  "Version"      : "0.1",
-  "Author URI"   : "http://enanocms.org/"
+  "Version"      : "0.1.1",
+  "Author URI"   : "http://enanocms.org/",
+  "Version list" : ['0.1', '0.1.1']
 }
 **!*/
 
@@ -79,6 +80,14 @@ function page_Special_NewPaste()
     $db->free_result();
     $private = $flags & PASTE_PRIVATE ? true : false;
     $copy_from = $paste_id;
+    
+    if ( $flags & PASTE_PRIVATE )
+    {
+      if ( @$_GET['hash'] !== gorilla_sign($paste_id, $text) )
+      {
+        die_friendly($lang->get('etc_access_denied_short'), '<p>' . $lang->get('gorilla_msg_wrong_hash') . '</p>');
+      }
+    }
   }
   
   $output->header();
@@ -107,13 +116,19 @@ function page_Special_NewPaste()
       
       var whitey = whiteOutElement(document.forms['gorilla_create']);
       
+      var parent = parseInt($('#gorilla_parent').val());
+      if ( isNaN(parent) )
+        parent = 0;
+      
       var json_packet = {
         highlight: $('#gorilla_highlight').val(),
         text: $('#gorilla_create_text').val(),
         is_private: $('#gorilla_private:checked').val() ? true : false,
         nick: $('#gorilla_nick').val(),
         title: $('#gorilla_title').val(),
-        ttl: parseInt($('.gorilla_ttl:checked').val())
+        ttl: parseInt($('.gorilla_ttl:checked').val()),
+        parent: parent,
+        hash: $('#gorilla_hash').val();
       };
       json_packet = ajaxEscape(toJSONString(json_packet));
       ajaxPost(makeUrlNS('Special', 'NewPaste/ajaxsubmit'), 'r=' + json_packet, function(ajax)
@@ -248,8 +263,20 @@ function page_Special_NewPaste()
         </em>
       </p>
       
+      <!-- reply -->
+      <p>
+        <?php echo $lang->get('gorilla_lbl_reply'); ?><input id="gorilla_parent" name="parent" size="8" value="<?php echo $copy_from ? strval($copy_from) : ''; ?>" />
+      </p>
+      
       </div>
     </fieldset>
+    
+    <!-- hash -->
+    <?php if ( $private && $copy_from ): ?>
+    <input type="hidden" name="hash" id="gorilla_hash" value="<?php echo gorilla_sign($paste_id, $text); ?>" />
+    <?php else: ?>
+    <input type="hidden" name="hash" id="gorilla_hash" value="" />
+    <?php endif; ?>
   
     <!-- login notice -->
   
@@ -280,7 +307,9 @@ function gorilla_process_post($have_geshi, $have_permission, $is_ajax = false)
       'is_private' => 'boolean',
       'nick' => 'string',
       'title' => 'string',
-      'ttl' => 'integer'
+      'ttl' => 'integer',
+      'parent' => 'integer',
+      'hash' => 'string'
     );
   
   $info = array();
@@ -318,8 +347,31 @@ function gorilla_process_post($have_geshi, $have_permission, $is_ajax = false)
         'is_private' => isset($_POST['is_private']),
         'nick' => $_POST['nick'],
         'title' => $_POST['title'],
-        'ttl' => intval($_POST['ttl'])
+        'ttl' => intval($_POST['ttl']),
+        'parent' => intval($_POST['parent']),
+        'hash' => $_POST['hash']
       );
+  }
+  
+  if ( $info['parent'] )
+  {
+    // make sure we have the right hash
+    $q = $db->sql_query('SELECT paste_text FROM ' . table_prefix . "pastes WHERE paste_id = {$info['parent']};");
+    if ( !$q )
+      $db->_die();
+    
+    if ( $db->numrows() > 0 )
+    {
+      list($old_text) = $db->fetchrow_num();
+      if ( $info['hash'] !== gorilla_sign($info['parent'], $old_text) )
+      {
+        $info['parent'] = 0;
+      }
+    }
+    else
+    {
+      $info['parent'] = 0;
+    }
   }
   
   if ( !$have_permission )
@@ -359,8 +411,8 @@ function gorilla_process_post($have_geshi, $have_permission, $is_ajax = false)
   if ( $info['is_private'] )
     $flags |= PASTE_PRIVATE;
   
-  $sql = 'INSERT INTO ' . table_prefix . "pastes( paste_title, paste_text, paste_author, paste_author_name, paste_author_ip, paste_language, paste_timestamp, paste_ttl, paste_flags ) VALUES\n"
-       . "  ( {$info_db['title']}, {$info_db['text']}, $session->user_id, {$info_db['nick']}, '{$_SERVER['REMOTE_ADDR']}', {$info_db['highlight']}, $now, {$info_db['ttl']}, $flags );";
+  $sql = 'INSERT INTO ' . table_prefix . "pastes( paste_title, paste_text, paste_author, paste_author_name, paste_author_ip, paste_language, paste_timestamp, paste_ttl, paste_flags, paste_parent ) VALUES\n"
+  . "  ( {$info_db['title']}, {$info_db['text']}, $session->user_id, {$info_db['nick']}, '{$_SERVER['REMOTE_ADDR']}', {$info_db['highlight']}, $now, {$info_db['ttl']}, $flags, {$info_db['parent']} );";
        
   if ( !$db->sql_query($sql) )
     ( $is_ajax ) ? $db->die_json() : $db->_die();
@@ -374,7 +426,7 @@ function gorilla_process_post($have_geshi, $have_permission, $is_ajax = false)
   
   $params = false;
   if ( $flags & PASTE_PRIVATE )
-    $params = 'hash=' . hmac_sha1($paste_id, sha1($info['text']));
+    $params = 'hash=' . gorilla_sign($paste_id, $info['text']);
   
   $paste_url = makeUrlComplete('Paste', $paste_id, $params, true);
   
@@ -498,6 +550,24 @@ function gorilla_display_paste($data)
   extract($data);
   $perms = $session->fetch_page_acl($paste_id, 'Paste');
   
+  $localhash = false;
+  if ( $paste_flags & PASTE_PRIVATE )
+  {
+    $localhash = gorilla_sign($paste_id, $paste_text);
+  }
+  
+  if ( $paste_flags & PASTE_PRIVATE || isset($_GET['delete']) )
+  {
+    if ( @$_GET['hash'] !== $localhash )
+    {
+      // allow viewing regardless if mod or admin
+      if ( !($session->user_level >= USER_LEVEL_MOD && !isset($_GET['delete'])) )
+      {
+        die_friendly($lang->get('etc_access_denied_short'), '<p>' . $lang->get('gorilla_msg_wrong_hash') . '</p>');
+      }
+    }
+  }
+  
   if ( isset($_GET['format']) )
   {
     switch($_GET['format'])
@@ -518,14 +588,6 @@ function gorilla_display_paste($data)
     }
   }
   
-  if ( $paste_flags & PASTE_PRIVATE || isset($_GET['delete']) )
-  {
-    if ( @$_GET['hash'] !== hmac_sha1($paste_id, sha1($paste_text)) )
-    {
-      die_friendly($lang->get('etc_access_denied_short'), '<p>' . $lang->get('gorilla_msg_wrong_hash') . '</p>');
-    }
-  }
-  
   $output->header();
   
   $perm = $paste_author == $session->user_id ? 'delete_paste_own' : 'delete_paste_others';
@@ -541,7 +603,7 @@ function gorilla_display_paste($data)
     }
     else
     {
-      $submit_url = makeUrlNS('Paste', $paste_id, 'delete&hash=' . hmac_sha1($paste_id, sha1($paste_text)), true);
+      $submit_url = makeUrlNS('Paste', $paste_id, 'delete&hash=' . gorilla_sign($paste_id, $paste_text), true);
       ?>
       <form action="<?php echo $submit_url; ?>" method="post">
         <p><?php echo $lang->get('gorilla_msg_delete_confirm'); ?></p>
@@ -572,15 +634,40 @@ function gorilla_display_paste($data)
   
   echo '<div class="mdg-infobox" style="margin: 10px 0;">';
   echo '<div style="float: right;">
-          ' . $lang->get('gorilla_msg_other_formats', array('plain_link' => makeUrlNS('Paste', $paste_id, 'format=text', true), 'download_link' => makeUrlNS('Paste', $paste_id, 'format=download', true))) . '
+          ' . $lang->get('gorilla_msg_other_formats', array('plain_link' => makeUrlNS('Paste', $paste_id, 'format=text' .  ( $localhash ? "&hash=$localhash" : '' ), true), 'download_link' => makeUrlNS('Paste', $paste_id, 'format=download' .  ( $localhash ? "&hash=$localhash" : '' ), true))) . '
           /
           <a title="' . $lang->get('gorilla_tip_new_paste') . '" href="' . makeUrlNS('Special', 'NewPaste') . '">' . $lang->get('gorilla_btn_new_paste') . '</a>
           /
-          <a title="' . $lang->get('gorilla_tip_copy_from_this') . '" href="' . makeUrlNS('Special', 'NewPaste/Copy=' . $paste_id) . '">' . $lang->get('gorilla_btn_copy_from_this') . '</a>';
+          <a title="' . $lang->get('gorilla_tip_copy_from_this') . '" href="' . makeUrlNS('Special', 'NewPaste/Copy=' . $paste_id, ( $paste_flags & PASTE_PRIVATE ? 'hash=' . gorilla_sign($paste_id, $paste_text) : false ), true) . '">' . $lang->get('gorilla_btn_copy_from_this') . '</a>';
+          
+  if ( $paste_parent )
+  {
+    // pull flags of parent
+    $q = $db->sql_query('SELECT paste_text, paste_flags FROM ' . table_prefix . "pastes WHERE paste_id = $paste_parent;");
+    if ( !$q )
+      $db->_die();
+    
+    if ( $db->numrows() > 0 )
+    {
+      list($parent_text, $parent_flags) = $db->fetchrow_num();
+      $parenthash = false;
+      if ( $parent_flags & PASTE_PRIVATE )
+      {
+        $parenthash = gorilla_sign($paste_parent, $parent_text);
+      }
+      
+      echo ' / ' . $lang->get('gorilla_msg_reply_to', array(
+          'parent_link' => makeUrlNS('Paste', $paste_parent, ( $parenthash ? "hash=$parenthash" : '' ), true),
+          'diff_link' => makeUrlNS('Paste', $paste_id, 'diff_parent' .  ( $localhash ? "&hash=$localhash" : '' ), true),
+          'parent_id' => $paste_parent
+        ));
+    }
+    $db->free_result($q);
+  }
           
   if ( $perms->get_permissions($perm) && $session->user_logged_in )
   {
-    echo ' / <a title="' . $lang->get('gorilla_tip_delete') . '" href="' . makeUrlNS('Paste', $paste_id, 'delete&hash=' . hmac_sha1($paste_id, sha1($paste_text)), true) . '">' . $lang->get('gorilla_btn_delete') . '</a>';
+    echo ' / <a title="' . $lang->get('gorilla_tip_delete') . '" href="' . makeUrlNS('Paste', $paste_id, 'delete&hash=' . gorilla_sign($paste_id, $paste_text), true) . '">' . $lang->get('gorilla_btn_delete') . '</a>';
   }
   if ( $perms->get_permissions('mod_misc') )
   {
@@ -590,6 +677,15 @@ function gorilla_display_paste($data)
   echo '</div>';
   echo $pasteinfo;
   echo '</div>';
+  
+  if ( isset($_GET['diff_parent']) && isset($parent_text) )
+  {
+    echo '<p>' . $lang->get('gorilla_btn_view_normal', array('orig_url' => makeUrlNS('Paste', $paste_id, ( $localhash ? "hash=$localhash" : '' ), true))) . '</p>';
+    // convert to unix newlines to avoid confusing the diff engine (seen on Chromium on Linux)
+    echo RenderMan::diff(str_replace("\r\n", "\n", $parent_text), str_replace("\r\n", "\n", $paste_text));
+    $output->footer();
+    return;
+  }
   
   if ( preg_match('/^## /m', $paste_text) )
   {
@@ -635,7 +731,7 @@ function gorilla_show_text($text, $lang)
 function gorilla_show_text_multi($text, $lang)
 {
   $sections = preg_split('/^## .*$/m', $text);
-  $headingcount = preg_match_all('/^## (.+?)(?: \[([a-z_-]+)\])? *$/m', $text, $matches);
+  $headingcount = preg_match_all('/^## (.+?)(?: \[([a-z_-]+)\])? *\r?$/m', $text, $matches);
   
   // if we have one heading less than the number of sections, print the first section
   while ( count($sections) > $headingcount )
@@ -652,6 +748,11 @@ function gorilla_show_text_multi($text, $lang)
     echo '<h2>' . htmlspecialchars(trim($matches[1][$i])) . '</h2>';
     gorilla_show_text(trim($sections[$i], "\r\n"), $clang);
   }
+}
+
+function gorilla_sign($id, $text)
+{
+  return hmac_sha1($id, sha1($text));
 }
 
 // make sure pastes are pruned on a regular basis
@@ -677,9 +778,14 @@ CREATE TABLE {{TABLE_PREFIX}}pastes(
   paste_timestamp int(12) NOT NULL DEFAULT 0,
   paste_ttl int(12) NOT NULL DEFAULT 86400,
   paste_flags int(8) NOT NULL DEFAULT 0,
+  paste_parent int(18) NOT NULL DEFAULT 0,
   PRIMARY KEY ( paste_id )
 ) ENGINE=`MyISAM` CHARSET=`UTF8` COLLATE=`utf8_bin`;
 
+**!*/
+
+/**!upgrade from="0.1"; to="0.1.1"; dbms="mysql"; **
+ALTER TABLE {{TABLE_PREFIX}}pastes ADD COLUMN paste_parent int(18) NOT NULL DEFAULT 0;
 **!*/
 
 /**!uninstall **
@@ -716,6 +822,7 @@ DROP TABLE {{TABLE_PREFIX}}pastes;
         lbl_ttl_day: '1 day',
         lbl_ttl_month: '1 month',
         lbl_ttl_forever: 'forever',
+        lbl_reply: 'Reply to paste: #',
         msg_will_prompt_for_login: 'You are not logged in. You will be asked to log in when you click the submit button below.',
         btn_submit: 'Paste it!',
         
@@ -736,6 +843,8 @@ DROP TABLE {{TABLE_PREFIX}}pastes;
         btn_delete: 'rm',
         tip_delete: 'Delete this paste',
         tip_paste_ip: 'IP address of paste author',
+        msg_reply_to: 'parent: <a href="%parent_link%">#%parent_id%</a> (<a href="%diff_link%">diff</a>)',
+        btn_view_normal: '<b>Difference from parent</b> (<a href="%orig_url%">back to paste</a>)',
         template_ns_string: 'paste',
         
         msg_paste_deleted: 'Paste deleted.',
