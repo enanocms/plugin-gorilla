@@ -128,7 +128,7 @@ function page_Special_NewPaste()
         title: $('#gorilla_title').val(),
         ttl: parseInt($('.gorilla_ttl:checked').val()),
         parent: parent,
-        hash: $('#gorilla_hash').val();
+        hash: $('#gorilla_hash').val()
       };
       json_packet = ajaxEscape(toJSONString(json_packet));
       ajaxPost(makeUrlNS('Special', 'NewPaste/ajaxsubmit'), 'r=' + json_packet, function(ajax)
