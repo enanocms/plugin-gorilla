@@ -22,8 +22,7 @@ define('PASTE_PRIVATE', 1);
 function gorilla_setupcore(&$paths, &$session)
 {
   // register our paste namespace
-  $nssep = substr($paths->nslist['Special'], -1);
-  $paths->create_namespace('Paste', 'Paste' . $nssep);
+  $paths->create_namespace('Paste', 'Paste:');
   
   // create our ACLs
   /**
@@ -786,6 +785,31 @@ function gorilla_attach_search()
     'additionalwhere' => 'AND (paste_flags & ' . PASTE_PRIVATE . ') = 0',
   ));
 }
+
+/**!install dbms="pgsql"; **
+CREATE TABLE pastes (
+    paste_id integer NOT NULL,
+    paste_title text,
+    paste_text text DEFAULT ''::text NOT NULL,
+    paste_author integer DEFAULT 1 NOT NULL,
+    paste_author_name character varying(255) DEFAULT 'Anonymous'::character varying NOT NULL,
+    paste_author_ip character varying(39) NOT NULL,
+    paste_language character varying(32) DEFAULT 'plaintext'::character varying NOT NULL,
+    paste_timestamp integer DEFAULT 0 NOT NULL,
+    paste_ttl integer DEFAULT 86400 NOT NULL,
+    paste_flags integer DEFAULT 0 NOT NULL,
+    paste_parent integer DEFAULT 0 NOT NULL
+);
+CREATE SEQUENCE pastes_paste_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MAXVALUE
+    NO MINVALUE
+    CACHE 1;
+ALTER SEQUENCE pastes_paste_id_seq OWNED BY pastes.paste_id;
+ALTER TABLE pastes ALTER COLUMN paste_id SET DEFAULT nextval('pastes_paste_id_seq'::regclass);
+ALTER TABLE ONLY pastes ADD CONSTRAINT pastes_pkey PRIMARY KEY (paste_id);
+**!*/
 
 /**!install dbms="mysql"; **
 CREATE TABLE {{TABLE_PREFIX}}pastes(
